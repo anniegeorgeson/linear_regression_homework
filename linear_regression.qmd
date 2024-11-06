@@ -1,0 +1,208 @@
+---
+title: "PLAN 372 Linear Regression"
+author: "Annie Georgeson"
+format: html
+editor: visual
+---
+
+Loading the libraries in:
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(tidycensus)
+library(ggthemes)
+```
+
+## Market Saturation Analysis
+
+Loading in CSV data:
+
+```{r}
+airport_data = read.csv(here::here("airport_pairs.csv"))
+raleigh_destination_origin = read.csv(here::here("airport_raleigh_origin_destination.csv"))
+
+# I filtered the RDU data out of the total airport data in excel and created a new data set (raleigh_destination_origin) in excel
+
+```
+
+View the table of flights departing and arriving in RDU:
+
+```{r}
+raleigh_destination_origin = raleigh_destination_origin |>
+  arrange(desc(passengers))
+# descending from most passengers to least passengers as an indicator of popularity
+
+view(raleigh_destination_origin)
+
+```
+
+Filter & view for passengers greater than 10,000:
+
+```{r}
+passengers_greater_10k = airport_data |> filter(passengers > 10000)
+view(passengers_greater_10k)
+```
+
+## Bringing in Census Data
+
+Loading in CBSA Data:
+
+```{r}
+acs_vars = load_variables(2022, "acs5")
+write_csv(acs_vars, "acsvars.csv")
+
+```
+
+```{r}
+cbsa_data = get_acs(
+  geography = "cbsa",
+  variables = c(total_pop = "B01003_001")
+)
+year = 2022
+output = "wide"
+
+```
+
+```{r}
+view(cbsa_data)
+
+```
+
+Creating variables for origin & destination before joining:
+
+```{r}
+origin_pop = cbsa_data
+destination_pop = cbsa_data
+
+origin_pop = origin_pop |>
+  rename(origin_estimate = estimate)
+
+destination_pop = destination_pop |>
+  rename(dest_estimate = estimate)
+```
+
+Removing airports in non-metropolitan area:
+
+```{r}
+metropolitan_airport = airport_data |>
+  filter(!is.na(origin_cbsa), !is.na(dest_cbsa))
+
+```
+
+Changing CBSA into a character:
+
+```{r}
+metropolitan_airport = metropolitan_airport |>
+  mutate(origin_cbsa = as.character(origin_cbsa))
+
+metropolitan_airport = metropolitan_airport |>
+  mutate(dest_cbsa = as.character(dest_cbsa))
+```
+
+Joining CBSA data to metropolitan airport data:
+
+```{r}
+origin_cbsa_airport = left_join(metropolitan_airport, origin_pop, by=c("origin_cbsa" = "GEOID"))
+
+dest_cbsa_airport = left_join(metropolitan_airport, destination_pop, by=c("dest_cbsa" = "GEOID"))
+
+join_cbsa_airport = left_join(origin_cbsa_airport, dest_cbsa_airport, by=c("origin_cbsa","dest_cbsa"))
+```
+
+Grouping by CBSA:
+
+```{r}
+cbsa_airport_pairs = airport_data |>
+  group_by(origin_cbsa, dest_cbsa) |>
+  summarize(total_passengers = sum(passengers, na.rm = TRUE)) |>
+  ungroup()
+
+view(cbsa_airport_pairs)
+```
+
+FIGURE 1: Scatter plot between origin population & total passengers:
+
+```{r}
+ggplot(join_cbsa_airport, aes(x=origin_estimate, y=passengers.x)) +
+  geom_point(size = .1) + 
+  xlim(100000, 9600000) + 
+  ylim(10000, 1000000) +
+  xlab("Origin Population") +
+  ylab("Total Passengers") +
+  ggtitle("Relationship between Origin Population & Total Passengers")
+
+ggsave("origin_scatterplot.png")
+
+```
+
+FIGURE 2: Scatter plot between destination population & total passengers:
+
+```{r}
+ggplot(join_cbsa_airport, aes(x=dest_estimate, y=passengers.y)) +
+  geom_point(size = .1) + 
+  xlim(100000, 9600000) + 
+  ylim(10000, 1000000) +
+  xlab("Destination Population") +
+  ylab("Total Passengers") +
+  ggtitle("Relationship between Destination Population & Total Passengers")
+
+ggsave("destination_scatterplot.png")
+```
+
+FIGURE 3: Scatter plot between flight distance and total passengers:
+
+```{r}
+ggplot(metropolitan_airport, aes(x=distancemiles, y=passengers)) +
+  geom_point(size = .1) + 
+  xlim(100, 5000) + 
+  ylim(10000, 1000000) +
+  xlab("Flight Distance in Miles") +
+  ylab("Total Passengers") +
+  ggtitle("Relationship between Flight Distance & Total Passengers")
+
+ggsave("distance_scatterplot.png")
+
+```
+
+## Passenger Volume Regression
+
+Regression on origin CBSA population, destination CBSA population, and distance between cities:
+
+```{r}
+total_passenger_regression_model = lm(passengers.x~origin_estimate+dest_estimate+distancemiles.x, join_cbsa_airport)
+
+summary(total_passenger_regression_model)
+```
+
+## Passenger Volume Prediction
+
+Creating a new route data set:
+
+```{r}
+new_routes <- tribble(
+  ~origin_cbsa, ~origin_estimate, ~dest_cbsa, ~dest_estimate, ~distancemiles,
+  "RDU",        1420825,         "PDX",       2505312,             2363,
+  "RDU",        1420825,         "ELP",        867161,              1606,
+  "RDU",        1420825,         "TLH",       386064,               496,
+  "RDU",        1420825,         "SMF",      2394673,              2345,
+  "PDX",       2505312,          "RDU",       1420825,              2363,
+  "ELP",        867161,          "RDU",       1420825,              1606,
+  "TLH",       386064,           "RDU",       1420825,               496,
+  "SMF",      2394673,           "RDU",       1420825,              2345
+)
+```
+
+Renaming to match with variables used in regression model:
+
+```{r}
+new_routes = new_routes |>
+  rename(distancemiles.x = distancemiles)
+```
+
+Predicting popularity:
+
+```{r}
+new_routes$forecast_popularity = predict(total_passenger_regression_model, new_routes)
+
+```
